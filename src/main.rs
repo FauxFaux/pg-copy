@@ -1,19 +1,21 @@
 use std::collections::HashMap;
 use std::env;
-use std::io::{Read, Write};
+use std::io::{BufRead, Read, Write};
+use std::sync::mpsc::{channel, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use anyhow::anyhow;
 use anyhow::Context;
 use anyhow::Result;
+use anyhow::{anyhow, bail};
 use itertools::Itertools;
 use log::error;
 use log::info;
 use native_tls::TlsConnector;
+use num_format::{Locale, ToFormattedString};
 use postgres::Client;
 use postgres_native_tls::MakeTlsConnector;
-use std_semaphore::Semaphore;
+use threadpool::ThreadPool;
 
 #[derive(Clone)]
 struct Config {
@@ -22,13 +24,26 @@ struct Config {
     table: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum State {
+    NotStarted,
+    Started,
+    Finished(u64),
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self::NotStarted
+    }
+}
+
 #[derive(Clone, Default, Debug)]
 struct StatKeeper {
     observations: usize,
     bytes: u64,
     read_micros: u128,
     write_micros: u128,
-    finished: bool,
+    state: State,
 }
 
 fn main() -> Result<()> {
@@ -61,7 +76,7 @@ fn main() -> Result<()> {
 
     drop(src);
 
-    let buckets = 20;
+    let buckets = 4096;
     let every_n = ids.len() as f32 / buckets as f32;
     ids.sort();
 
@@ -80,73 +95,81 @@ fn main() -> Result<()> {
         .map(|(left, right)| format!("id >= {} AND id < {}", left, right))
         .collect_vec();
 
-    let mut threads = Vec::new();
+    let pool = ThreadPool::new(64);
+    let (tx, rx) = channel();
 
-    let semaphore = Arc::new(Semaphore::new(60));
     let mut stats = HashMap::new();
-
-    work(
-        config.clone(),
-        Arc::new(Mutex::new(StatKeeper::default())),
-        "id < 0".to_string(),
-    )?;
 
     for query in queries {
         let config = config.clone();
-        let semaphore = Arc::clone(&semaphore);
+        let tx = tx.clone();
         let stat = Arc::new(Mutex::new(StatKeeper::default()));
         stats.insert(query.to_string(), Arc::clone(&stat));
 
-        threads.push((
-            query.to_string(),
-            std::thread::spawn(move || -> Result<()> {
-                let _guard = semaphore.access();
-                work(config, stat, query)?;
-                Ok(())
-            }),
-        ));
+        pool.execute(move || {
+            tx.send(work(config, stat, query))
+                .expect("main thread has gone away");
+        });
     }
 
-    'outer: loop {
-        let mut finished = 0;
+    let start = Instant::now();
+
+    while pool.queued_count() > 0 || pool.active_count() > 0 {
+        if let Ok(result) = rx.try_recv() {
+            result?;
+            continue;
+        };
+
+        // couldn't get this to collect()
+        let mut all_stats = Vec::new();
         for (query, stat) in stats.iter() {
             let stat = match stat.lock() {
                 Ok(stat) => stat,
-                Err(_) => break 'outer,
+                Err(e) => bail!("{}: poison! {:?}", query, e),
             };
 
-            if stat.finished {
-                finished += 1;
-            }
-
-            println!("{} {:?}", query, stat);
+            all_stats.push(stat.clone());
         }
 
-        if finished == stats.len() {
-            break;
+        let read: u128 = all_stats.iter().map(|stats| stats.read_micros).sum();
+        let write: u128 = all_stats.iter().map(|stats| stats.write_micros).sum();
+        let observations: usize = all_stats.iter().map(|stats| stats.observations).sum();
+
+        let bytes: u64 = all_stats.iter().map(|stats| stats.bytes).sum();
+        let live = all_stats
+            .iter()
+            .filter(|stats| stats.state == State::Started)
+            .count();
+        let finished = all_stats
+            .iter()
+            .filter(|stats| match stats.state {
+                State::Finished(_) => true,
+                _ => false,
+            })
+            .count();
+
+        let elapsed = start.elapsed();
+        let obs_div = (observations as u128).max(1);
+        println!(
+            "{}s elapsed, {}us mean read, {}us mean write",
+            elapsed.as_secs().to_formatted_string(&Locale::en),
+            read / obs_div,
+            write / obs_div,
+        );
+
+        println!(
+            "Read {} bytes; {} running jobs, {} finished jobs.",
+            bytes.to_formatted_string(&Locale::en),
+            live,
+            finished
+        );
+        println!();
+
+        if pool.panic_count() > 0 {
+            bail!("some thread panic'd");
         }
 
         std::thread::sleep(Duration::from_secs(2));
-    }
-
-    let mut errors = Vec::new();
-    for (name, thread) in threads {
-        if let Err(e) = thread
-            .join()
-            .expect(&format!("thread panicked: '{}'", name))
-            .with_context(|| anyhow!("joining thread '{}'", name))
-        {
-            error!("{}: thread failed: {:?}", name, e);
-            errors.push((name, e));
-        }
-    }
-
-    for (name, error) in &errors {
-        error!("{}: thread failed, so failing build: {:?}", name, error);
-    }
-
-    if let Some((_, error)) = errors.into_iter().next() {
-        Err(error)?;
     }
 
     Ok(())
@@ -168,6 +191,7 @@ fn work(config: Config, shared_stats: Arc<Mutex<StatKeeper>>, query: String) -> 
     info!("COPY IN command sent");
 
     let mut stats = StatKeeper::default();
+    stats.state = State::Started;
 
     let mut buf = [0u8; 8 * 1024];
     loop {
@@ -187,15 +211,16 @@ fn work(config: Config, shared_stats: Arc<Mutex<StatKeeper>>, query: String) -> 
 
         stats.write_micros += begin_write.elapsed().as_micros();
 
-        stats.observations += 1;
-
-        // approximately every 2MB
-        if stats.observations % 256 == 0 {
+        // silly optimisation, avoid locking in the loop
+        // approximately every 500kB
+        if stats.observations % 64 == 0 {
             let mut shared_stats = shared_stats
                 .lock()
                 .expect("the main thread would have panicked");
             *shared_stats = stats.clone();
         }
+
+        stats.observations += 1;
     }
 
     drop(reader);
@@ -203,11 +228,14 @@ fn work(config: Config, shared_stats: Arc<Mutex<StatKeeper>>, query: String) -> 
 
     writer.flush()?;
     let written = writer.finish()?;
+    dest.close()?;
 
-    shared_stats
+    stats.state = State::Finished(written);
+
+    let mut shared = shared_stats
         .lock()
-        .expect("the main thread would have panicked")
-        .finished = true;
+        .expect("the main thread would have panicked");
+    *shared = stats;
 
     Ok(())
 }
