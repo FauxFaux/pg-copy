@@ -1,6 +1,10 @@
 use std::collections::HashMap;
 use std::env;
+use std::fmt::Display;
+use std::fs;
 use std::io::{BufRead, Read, Write};
+use std::path;
+use std::str::FromStr;
 use std::sync::mpsc::{channel, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -22,6 +26,7 @@ struct Config {
     src: String,
     dest: String,
     table: String,
+    table_sample: f32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -46,35 +51,48 @@ struct StatKeeper {
     state: State,
 }
 
+impl Config {
+    fn file(&self, extension: impl Display) -> String {
+        format!("pg-copy-state/{}.{}", self.table.to_lowercase(), extension)
+    }
+}
+
 fn main() -> Result<()> {
     env_logger::init();
-    let usage =
-        "usage: SRC='host=foo user=bar password=baz dbname=quux' DEST='host..' TABLE=table ./app";
+
+    let usage = concat!(
+        "usage: SRC='host=foo user=bar password=baz dbname=quux' ",
+        "DEST='host..' TABLE=table ./app [compute-initial|initial]"
+    );
 
     let config = Config {
         src: env::var("SRC").with_context(|| usage)?,
         dest: env::var("DEST").with_context(|| usage)?,
         table: env::var("TABLE").with_context(|| usage)?,
+        table_sample: env::var("TABLE_SAMPLE_FLOAT")
+            .unwrap_or_else(|_| "0.01".to_string())
+            .parse()?,
     };
 
-    let mut src = pg(&config.src, "src")?;
+    let args = env::args().skip(1).collect_vec();
+    match (args.get(0).map(|v| v.as_ref()), args.get(1)) {
+        (Some("compute-initial"), None) => return compute_initial(&config),
+        (Some("initial"), None) => (),
+        _ => bail!(usage),
+    };
 
-    let max = src
-        .query_one(&format!("select max(id) from {}", config.table), &[])?
-        .get::<_, i64>(0);
-    info!("max: {}", max);
-
-    let mut ids = src
-        .query(
-            &format!("select id from {} tablesample system (0.01)", config.table),
-            &[],
-        )?
-        .into_iter()
-        .map(|row| row.get::<_, i64>(0))
-        .collect_vec();
-    info!("samples: {}", ids.len());
-
-    drop(src);
+    let max = fs::read_to_string(config.file("watermark"))
+        .with_context(|| {
+            anyhow!(
+                "loading the watermark file written by the `compute-initial` command for {}",
+                config.table
+            )
+        })?
+        .parse()?;
+    let mut ids: Vec<i64> = fs::read_to_string(config.file(format!("ids.{}", max)))?
+        .split('\n')
+        .map(|s| Ok(i64::from_str(s)?))
+        .collect::<Result<_>>()?;
 
     let buckets = 4096;
     let every_n = ids.len() as f32 / buckets as f32;
@@ -237,6 +255,39 @@ fn work(config: Config, shared_stats: Arc<Mutex<StatKeeper>>, query: String) -> 
         .expect("the main thread would have panicked");
     *shared = stats;
 
+    Ok(())
+}
+
+fn compute_initial(config: &Config) -> Result<()> {
+    let mut src = pg(&config.src, "src")?;
+
+    let max = src
+        .query_one(&format!("select max(id) from {}", config.table), &[])?
+        .get::<_, i64>(0);
+
+    fs::create_dir_all("pg-copy-state")?;
+    fs::write(config.file("watermark"), format!("{}\n", max))?;
+    info!("found max ({}), collecting sample", max);
+
+    let mut ids = src
+        .query(
+            &format!(
+                "select id from {} tablesample system ({})",
+                config.table, config.table_sample
+            ),
+            &[],
+        )?
+        .into_iter()
+        .map(|row| row.get::<_, i64>(0))
+        .collect_vec();
+    info!("id samples: {}", ids.len());
+    ids.sort();
+
+    fs::write(
+        config.file(format!("ids.{}", max)),
+        ids.iter().map(|v| format!("{}\n", v)).join(""),
+    )?;
+    src.close()?;
     Ok(())
 }
 
