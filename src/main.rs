@@ -13,6 +13,12 @@ fn main() -> Result<()> {
         .filter_level(log::LevelFilter::Info)
         .init();
 
+    let table = Arg::new("table")
+        .short('t')
+        .long("table")
+        .takes_value(true)
+        .required(true);
+
     let matches = clap::app_from_crate!()
         .arg(
             Arg::new("env")
@@ -21,14 +27,26 @@ fn main() -> Result<()> {
                 .takes_value(true)
                 .help(".env file to load"),
         )
+        .subcommand(App::new("export-stats").arg(table.clone()))
         .subcommand(
-            App::new("export-stats").arg(
-                Arg::new("table")
-                    .short('t')
-                    .long("table")
-                    .takes_value(true)
-                    .required(true),
-            ),
+            App::new("pg2pg")
+                .subcommand(
+                    App::new("prepare")
+                        .arg(table.clone())
+                        .arg(
+                            Arg::new("dest")
+                                .short('d')
+                                .long("dest")
+                                .takes_value(true)
+                                .required(true),
+                        )
+                        .arg(
+                            Arg::new("batch_rows")
+                                .long("batch-rows")
+                                .default_value("1000000"),
+                        ),
+                )
+                .subcommand(App::new("batched").arg(table.clone())),
         )
         .setting(clap::AppSettings::SubcommandRequiredElseHelp)
         .get_matches();
@@ -40,7 +58,7 @@ fn main() -> Result<()> {
     match matches.subcommand().expect("SubcommandRequiredElseHelp") {
         ("export-stats", args) => stats::export_stats(args)?,
         ("pg2pg", args) => pg2pg::cli(args)?,
-        _ => unreachable!(),
+        _ => unreachable!("uncovered subcommand"),
     }
 
     Ok(())

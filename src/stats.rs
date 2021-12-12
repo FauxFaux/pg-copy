@@ -6,15 +6,15 @@ use lazy_static::lazy_static;
 use log::info;
 use postgres::Client;
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 pub struct Stats {
-    est_rows: u64,
-    cols: Vec<ColInfo>,
+    pub est_rows: u64,
+    pub cols: Vec<ColInfo>,
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Serialize)]
+#[derive(Copy, Clone, Eq, PartialEq, Deserialize, Serialize)]
 enum ColType {
     Bool,
     Int4,
@@ -29,8 +29,8 @@ enum ColType {
     JsonB,
 }
 
-#[derive(Serialize)]
-struct ColInfo {
+#[derive(Deserialize, Serialize)]
+pub struct ColInfo {
     name: String,
     len: i16,
     nullable: bool,
