@@ -1,3 +1,5 @@
+mod stats;
+
 use std::collections::HashMap;
 use std::env;
 use std::fmt::Display;
@@ -12,6 +14,7 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::{anyhow, bail};
+use clap::{App, Arg, Subcommand};
 use itertools::Itertools;
 use log::error;
 use log::info;
@@ -58,7 +61,33 @@ impl Config {
 }
 
 fn main() -> Result<()> {
-    env_logger::init();
+    env_logger::builder()
+        .filter_level(log::LevelFilter::Info)
+        .init();
+
+    let matches = clap::app_from_crate!()
+        .arg(
+            Arg::new("env")
+                .short('e')
+                .long("env")
+                .takes_value(true)
+                .help(".env file to load"),
+        )
+        .subcommand(
+            App::new("export-stats")
+                .arg(Arg::new("table").short('t').long("table").takes_value(true)),
+        )
+        .setting(clap::AppSettings::SubcommandRequiredElseHelp)
+        .get_matches();
+
+    if let Some(env) = matches.value_of("env") {
+        load_env(env)?;
+    }
+
+    match matches.subcommand().expect("SubcommandRequiredElseHelp") {
+        ("export-stats", args) => stats::export_stats(args)?,
+        _ => unreachable!(),
+    }
 
     let usage = concat!(
         "usage: SRC='host=foo user=bar password=baz dbname=quux' ",
@@ -189,6 +218,23 @@ fn main() -> Result<()> {
 
         std::thread::sleep(Duration::from_secs(2));
     }
+
+    Ok(())
+}
+
+fn load_env(env: impl ToString) -> Result<()> {
+    let mut env = env.to_string();
+    if !env.ends_with(".env") {
+        env.push_str(".env");
+    }
+    info!(
+        "loaded env from {:?}",
+        dotenv::from_filename(&env).with_context(|| anyhow!(
+            "loading {:?} from {:?}",
+            env,
+            env::current_dir()
+        ))?
+    );
 
     Ok(())
 }
