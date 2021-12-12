@@ -1,17 +1,15 @@
-use std::env;
-
 use crate::conn::{conn_string_from_env, pg};
 
 use anyhow::{bail, Context, Result};
 use clap::ArgMatches;
-use itertools::Itertools;
 use lazy_static::lazy_static;
 use log::info;
+use postgres::Client;
 use regex::Regex;
 use serde::Serialize;
 
 #[derive(Serialize)]
-struct Stats {
+pub struct Stats {
     est_rows: u64,
     cols: Vec<ColInfo>,
 }
@@ -43,12 +41,16 @@ struct ColInfo {
     // most_common_vals: Vec<String>,
 }
 
-pub(crate) fn export_stats(args: &ArgMatches) -> Result<()> {
+pub fn export_stats(args: &ArgMatches) -> Result<()> {
     let table = args.value_of("table").expect("required parameter");
-
     let src = conn_string_from_env("PG_SRC")?;
     let mut client = pg(&src, "src")?;
+    let stats = stats(&mut client, table)?;
+    serde_json::to_writer_pretty(std::io::stdout().lock(), &stats)?;
+    Ok(())
+}
 
+pub fn stats(client: &mut Client, table: &str) -> Result<Stats> {
     info!("{}: collecting schema...", table);
     let cols = client.query(
         concat!(
@@ -90,12 +92,7 @@ pub(crate) fn export_stats(args: &ArgMatches) -> Result<()> {
         })
         .with_context(|| "explain didn't return rows=?")?;
 
-    let stats = Stats { est_rows, cols };
-
-    serde_json::to_writer_pretty(std::io::stdout().lock(), &stats)?;
-
-    client.close()?;
-    Ok(())
+    Ok(Stats { est_rows, cols })
 }
 
 impl ColType {
