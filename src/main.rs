@@ -1,3 +1,4 @@
+mod conn;
 mod stats;
 
 use std::collections::HashMap;
@@ -11,6 +12,7 @@ use std::sync::mpsc::{channel, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::conn::pg;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::{anyhow, bail};
@@ -74,8 +76,13 @@ fn main() -> Result<()> {
                 .help(".env file to load"),
         )
         .subcommand(
-            App::new("export-stats")
-                .arg(Arg::new("table").short('t').long("table").takes_value(true)),
+            App::new("export-stats").arg(
+                Arg::new("table")
+                    .short('t')
+                    .long("table")
+                    .takes_value(true)
+                    .required(true),
+            ),
         )
         .setting(clap::AppSettings::SubcommandRequiredElseHelp)
         .get_matches();
@@ -335,20 +342,4 @@ fn compute_initial(config: &Config) -> Result<()> {
     )?;
     src.close()?;
     Ok(())
-}
-
-fn pg(db_connection_string: &str, logging_tag: &str) -> Result<Client> {
-    let connector = TlsConnector::builder()
-        .danger_accept_invalid_certs(true)
-        .danger_accept_invalid_hostnames(true)
-        .build()?;
-    let connector = MakeTlsConnector::new(connector);
-
-    let mut client = Client::connect(&db_connection_string, connector)?;
-    info!("{}: connected", logging_tag);
-
-    client.execute("set time zone 'UTC'", &[])?;
-    info!("{}: server responds", logging_tag);
-
-    Ok(client)
 }
