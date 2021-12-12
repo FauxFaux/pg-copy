@@ -45,13 +45,19 @@ struct InputConfig {
     target_batch_rows: u64,
 }
 
+// min threads? max threads
+// open transaction to grab snapshot
+
 fn prepare(args: &ArgMatches) -> Result<()> {
     let src = conn_string_from_env("PG_SRC")?;
     let table_name = args.value_of("table").expect("required option");
 
     let mut client = pg(&src, "src")?;
 
-    let dest = args.value_of("dest").expect("required option").to_string();
+    let dest = args
+        .value_of("project")
+        .expect("required option")
+        .to_string();
     fs::create_dir(&dest)
         .with_context(|| anyhow!("creating dest: {:?} from {:?}", &dest, env::current_dir()))?;
 
@@ -78,22 +84,6 @@ fn prepare(args: &ArgMatches) -> Result<()> {
     write_file_in(&dest, "ids.json", initial.ids)?;
 
     Ok(())
-}
-
-fn catchup() {
-    // min batch size, max batch size?
-    // generate batches
-    // min threads? max threads
-
-    // open transaction to grab snapshot
-    // bulk copy in threads
-    // commit everything together
-
-    // commit asap, for initial mode? always?
-
-    // how about a catchup-safe, which we're sure about whether it's committed or not (single writer transaction)
-    // pretty sure yes
-    // assume dense for catchup-safe, for batch calculation
 }
 
 struct Initial {

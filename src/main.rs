@@ -19,6 +19,12 @@ fn main() -> Result<()> {
         .takes_value(true)
         .required(true);
 
+    let project = Arg::new("project")
+        .short('p')
+        .long("project")
+        .takes_value(true)
+        .required(true);
+
     let matches = clap::app_from_crate!()
         .arg(
             Arg::new("env")
@@ -33,20 +39,14 @@ fn main() -> Result<()> {
                 .subcommand(
                     App::new("prepare")
                         .arg(table.clone())
-                        .arg(
-                            Arg::new("dest")
-                                .short('d')
-                                .long("dest")
-                                .takes_value(true)
-                                .required(true),
-                        )
+                        .arg(project.clone())
                         .arg(
                             Arg::new("batch_rows")
                                 .long("batch-rows")
                                 .default_value("1000000"),
                         ),
                 )
-                .subcommand(App::new("batched").arg(table.clone())),
+                .subcommand(App::new("batched").arg(project.clone())),
         )
         .setting(clap::AppSettings::SubcommandRequiredElseHelp)
         .get_matches();
