@@ -1,2 +1,5 @@
 /target
 .idea/
+?.parquet
+.history
+*.pg-copy-par.zstd

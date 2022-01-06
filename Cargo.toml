@@ -7,6 +7,8 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1"
+arrow2 = { version = "0.8", features = ["io_parquet", "io_parquet_compression"] }
+byteorder = "1.4"
 clap = { version = "3.0.0-rc.4", features = ["cargo"] }
 dotenv = "0.15"
 env_logger = "0.9.0"

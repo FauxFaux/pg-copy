@@ -15,7 +15,7 @@ pub struct Stats {
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Deserialize, Serialize)]
-enum ColType {
+pub enum ColType {
     Bool,
     Int4,
     Float4,
@@ -33,13 +33,13 @@ enum ColType {
 
 #[derive(Deserialize, Serialize)]
 pub struct ColInfo {
-    name: String,
-    len: i16,
-    nullable: bool,
-    col_type: ColType,
+    pub name: String,
+    pub len: i16,
+    pub nullable: bool,
+    pub col_type: ColType,
 
-    avg_width: Option<i32>,
-    n_distinct: Option<f32>,
+    pub avg_width: Option<i32>,
+    pub n_distinct: Option<f32>,
     // most_common_vals: Vec<String>,
 }
 

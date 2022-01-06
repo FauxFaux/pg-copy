@@ -1,4 +1,5 @@
 mod conn;
+mod packit;
 mod pg2pg;
 mod stats;
 
@@ -35,6 +36,11 @@ fn main() -> Result<()> {
         )
         .subcommand(App::new("export-stats").arg(table.clone()))
         .subcommand(
+            App::new("packit")
+                .arg(Arg::new("FILES").multiple_values(true).required(true))
+                .arg(project.clone()),
+        )
+        .subcommand(
             App::new("pg2pg")
                 .subcommand(
                     App::new("prepare")
@@ -58,6 +64,7 @@ fn main() -> Result<()> {
 
     match matches.subcommand().expect("SubcommandRequiredElseHelp") {
         ("export-stats", args) => stats::export_stats(args)?,
+        ("packit", args) => packit::cli(args)?,
         ("pg2pg", args) => pg2pg::cli(args)?,
         _ => unreachable!("uncovered subcommand"),
     }
