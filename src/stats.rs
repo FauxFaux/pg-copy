@@ -24,6 +24,8 @@ enum ColType {
     Int8,
     TimeStampTz,
 
+    Uuid,
+
     Text,
     Json,
     JsonB,
@@ -36,8 +38,8 @@ pub struct ColInfo {
     nullable: bool,
     col_type: ColType,
 
-    avg_width: i32,
-    n_distinct: f32,
+    avg_width: Option<i32>,
+    n_distinct: Option<f32>,
     // most_common_vals: Vec<String>,
 }
 
@@ -56,7 +58,7 @@ pub fn stats(client: &mut Client, table: &str) -> Result<Stats> {
         concat!(
             "select att.attname,attlen,attndims,attnotnull,typ.typname,stat.avg_width,stat.n_distinct,stat.most_common_vals",
             " from pg_attribute att inner join pg_type typ on (atttypid=typ.oid)",
-            " inner join pg_stats stat on (tablename=$1 and stat.attname = att.attname)",
+            " left join pg_stats stat on (tablename=$1 and stat.attname = att.attname)",
             " where attrelid=(select relid from pg_stat_user_tables where relname=$1)",
             " and not attisdropped and attnum >= 1 order by attnum"
         ),
@@ -105,9 +107,11 @@ impl ColType {
             "float8" => ColType::Float8,
             "timestamptz" => ColType::TimeStampTz,
 
-            "text" => ColType::Text,
+            "varchar" | "text" => ColType::Text,
             "json" => ColType::Json,
             "jsonb" => ColType::JsonB,
+
+            "uuid" => ColType::Uuid,
 
             _ => bail!("unsupported ColType: {:?}", val),
         })
