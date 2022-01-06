@@ -46,7 +46,8 @@ fn main() -> Result<()> {
                                 .default_value("1000000"),
                         ),
                 )
-                .subcommand(App::new("batched").arg(project.clone())),
+                .subcommand(App::new("batched").arg(project.clone()))
+                .subcommand(App::new("par-dump").arg(project.clone())),
         )
         .setting(clap::AppSettings::SubcommandRequiredElseHelp)
         .get_matches();

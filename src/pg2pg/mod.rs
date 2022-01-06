@@ -1,3 +1,4 @@
+mod par_dump;
 mod unbuffered;
 
 use std::env;
@@ -20,6 +21,7 @@ pub fn cli(args: &ArgMatches) -> Result<()> {
     match args.subcommand().expect("subcommand required") {
         ("prepare", args) => prepare(args),
         ("batched", args) => unbuffered::cli(args),
+        ("par-dump", args) => par_dump::cli(args),
         _ => unimplemented!("subcommands should be covered"),
     }
 }
@@ -135,5 +137,9 @@ fn write_file_in(path: impl AsRef<Path>, name: &str, val: impl Serialize) -> Res
 pub fn read_state_file<T: DeserializeOwned>(path: impl AsRef<Path>, name: &str) -> Result<T> {
     let mut path = path.as_ref().to_path_buf();
     path.push(name);
-    Ok(serde_json::from_reader(fs::File::open(name)?)?)
+    Ok(serde_json::from_reader(
+        fs::File::open(&path)
+            .with_context(|| anyhow!("opening {:?} in {:?}", path, env::current_dir()))?,
+    )
+    .with_context(|| anyhow!("parsing {:?} in {:?}", path, env::current_dir()))?)
 }

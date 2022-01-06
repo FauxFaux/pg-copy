@@ -98,10 +98,10 @@ pub fn go(state_dir: impl AsRef<Path>) -> Result<()> {
     Ok(())
 }
 
-fn generate_wheres(ids: &[i64], end: i64) -> Vec<String> {
+pub fn generate_wheres(ids: &[i64], end: i64) -> Vec<String> {
     let ids_per_bucket = 32;
     let middles = (1..(ids.len() / ids_per_bucket))
-        .map(|bucket| ids[bucket])
+        .map(|bucket| ids[bucket * ids_per_bucket])
         .dedup()
         .collect_vec();
 
