@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::sync::mpsc::{SendError, SyncSender};
+use std::sync::mpsc::{Receiver, SendError, SyncSender};
 use std::thread::JoinHandle;
 
 use anyhow::{anyhow, Context, Result};
@@ -46,43 +46,51 @@ struct OutThread<W> {
     thread: JoinHandle<Result<W>>,
 }
 
+fn out_thread<W: Write + Send + 'static>(
+    mut inner: W,
+    schema: &[Field],
+    rx: Receiver<Result<RecordBatch, ArrowError>>,
+) -> Result<JoinHandle<Result<W>>> {
+    let arrow_schema = Schema::new(
+        schema
+            .iter()
+            .map(|f| ArrowField {
+                name: f.name.to_string(),
+                data_type: f.kind.to_arrow(),
+                nullable: f.nullable,
+                dict_id: 0,
+                dict_is_ordered: false,
+                metadata: None,
+            })
+            .collect(),
+    );
+
+    let write_options = WriteOptions {
+        write_statistics: true,
+        compression: Compression::Zstd,
+        version: Version::V2,
+    };
+    let encodings = schema.iter().map(|f| f.encoding).collect();
+    let parquet_schema = to_parquet_schema(&arrow_schema)?;
+
+    Ok(std::thread::spawn(move || -> Result<W> {
+        write_file(
+            &mut inner,
+            RowGroupIterator::try_new(rx.into_iter(), &arrow_schema, write_options, encodings)?,
+            &arrow_schema,
+            parquet_schema,
+            write_options,
+            None,
+        )?;
+        Ok(inner)
+    }))
+}
+
 impl<W: Write + Send + 'static> Writer<W> {
-    pub fn new(mut inner: W, schema: &[Field]) -> Result<Self> {
+    pub fn new(inner: W, schema: &[Field]) -> Result<Self> {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
 
-        let arrow_schema = Schema::new(
-            schema
-                .iter()
-                .map(|f| ArrowField {
-                    name: f.name.to_string(),
-                    data_type: f.kind.to_arrow(),
-                    nullable: f.nullable,
-                    dict_id: 0,
-                    dict_is_ordered: false,
-                    metadata: None,
-                })
-                .collect(),
-        );
-
-        let write_options = WriteOptions {
-            write_statistics: true,
-            compression: Compression::Zstd,
-            version: Version::V2,
-        };
-        let encodings = schema.iter().map(|f| f.encoding).collect();
-
-        let thread = std::thread::spawn(move || -> Result<W> {
-            write_file(
-                &mut inner,
-                RowGroupIterator::try_new(rx.into_iter(), &arrow_schema, write_options, encodings)?,
-                &arrow_schema,
-                to_parquet_schema(&arrow_schema)?,
-                write_options,
-                None,
-            )?;
-            inner.flush()?;
-            Ok(inner)
-        });
+        let thread = out_thread(inner, schema, rx)?;
 
         Ok(Self {
             schema: schema.to_vec().into_boxed_slice(),
@@ -98,16 +106,29 @@ impl<W: Write + Send + 'static> Writer<W> {
     pub fn finish_row(&mut self) -> Result<()> {
         self.table.finish_row()?;
 
+        if self.table.mem_estimate() > 512 * 1024 * 1024 {
+            self.flush()?;
+        }
+
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<()> {
         let thread = self
             .thread
             .as_mut()
             .ok_or_else(|| anyhow!("already failed"))?;
 
-        if self.table.mem_estimate() < 512 * 1024 * 1024 {
-            return Ok(());
-        }
+        let mem_estimate = self.table.mem_estimate();
+        let rows = self.table.rows();
 
-        info!("dibatching patch");
+        info!(
+            "submitting row group ({} rows, ~{}MB, ~{}bytes/row)",
+            rows,
+            mem_estimate / 1024 / 1024,
+            mem_estimate / rows
+        );
+
         let result = RecordBatch::try_from_iter(
             self.table
                 .take_batch()
@@ -131,10 +152,14 @@ impl<W: Write + Send + 'static> Writer<W> {
     }
 
     pub fn finish(mut self) -> Result<W> {
+        self.flush()?;
+
         let thread = self
             .thread
             .take()
             .ok_or_else(|| anyhow!("already failed"))?;
+
+        info!("finishing...");
         drop(thread.tx);
         thread.thread.join().expect("thread panic")
     }

@@ -1,9 +1,9 @@
+use std::io::Write;
 use std::str::from_utf8;
 use std::{fs, io};
 
 use anyhow::{bail, Result};
 use clap::ArgMatches;
-use log::info;
 
 mod table;
 mod unbin;
@@ -79,8 +79,7 @@ pub fn cli(args: &ArgMatches) -> Result<()> {
         }
     }
 
-    info!("joining");
-    writer.finish()?;
+    writer.finish()?.flush()?;
 
     Ok(())
 }

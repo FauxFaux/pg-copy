@@ -88,6 +88,10 @@ impl Table {
         self.mem_used
     }
 
+    pub fn rows(&self) -> usize {
+        self.builders[0].inner.len()
+    }
+
     pub fn push_null(&mut self, i: usize) -> Result<()> {
         // only off by a factor of about eight
         self.mem_used += 1;
