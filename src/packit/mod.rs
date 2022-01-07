@@ -1,20 +1,16 @@
-use std::io::Write;
 use std::str::from_utf8;
 use std::{fs, io};
 
-use anyhow::{anyhow, bail, Result};
-use arrow2::datatypes::{Field, Schema};
-use arrow2::io::parquet::write::{
-    to_parquet_schema, write_file, Compression, Encoding, RowGroupIterator, Version, WriteOptions,
-};
-use arrow2::record_batch::RecordBatch;
+use anyhow::{bail, Result};
 use clap::ArgMatches;
 use log::info;
 
 mod table;
 mod unbin;
+mod write;
 
-use crate::packit::table::{Kind, Table};
+use crate::packit::table::Kind;
+use crate::packit::write::Writer;
 use crate::stats::ColType;
 use crate::stats::Stats;
 use unbin::Unbin;
@@ -30,7 +26,7 @@ pub fn cli(args: &ArgMatches) -> Result<()> {
         .cols
         .iter()
         .map(|col| {
-            Ok(match col.col_type {
+            let kind = match col.col_type {
                 ColType::Bool => Kind::Bool,
                 ColType::Int4 => Kind::I32,
                 ColType::Int8 => Kind::I64,
@@ -39,57 +35,21 @@ pub fn cli(args: &ArgMatches) -> Result<()> {
                 ColType::TimeStampTz => Kind::I64,
                 ColType::Text | ColType::JsonB | ColType::Json => Kind::String,
                 other => bail!("unsupported column type {:?}", other),
-            })
+            };
+            Ok(write::Field::new(&col.name, kind, col.nullable))
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let file = fs::File::create("a.parquet")?;
 
-    let mut file = fs::File::create("a.parquet")?;
-    let arrow_schema = Schema::new(
-        packit_schema
-            .iter()
-            .zip(stats.cols.iter())
-            .map(|(packit, stats)| Field {
-                name: stats.name.to_string(),
-                data_type: packit.to_arrow(),
-                nullable: stats.nullable,
-                dict_id: 0,
-                dict_is_ordered: false,
-                metadata: None,
-            })
-            .collect(),
-    );
-    let write_options = WriteOptions {
-        write_statistics: true,
-        compression: Compression::Zstd,
-        version: Version::V2,
-    };
-
-    let thread = std::thread::spawn(move || -> Result<()> {
-        write_file(
-            &mut file,
-            RowGroupIterator::try_new(
-                rx.into_iter(),
-                &arrow_schema,
-                write_options,
-                vec![Encoding::Plain; arrow_schema.fields().len()],
-            )?,
-            &arrow_schema,
-            to_parquet_schema(&arrow_schema)?,
-            write_options,
-            None,
-        )?;
-        file.flush()?;
-        Ok(())
-    });
-
-    let mut pack = Table::with_capacity(&packit_schema, 4096);
+    let mut writer = Writer::new(file, &packit_schema)?;
 
     for input in args.values_of("FILES").expect("required") {
         let input = io::BufReader::new(zstd::Decoder::new(fs::File::open(input)?)?);
         let mut input = Unbin::new(input, u16::try_from(stats.cols.len())?)?;
         while let Some(row) = input.next()? {
+            let pack = writer.table();
+
             for (i, col) in stats.cols.iter().enumerate() {
                 let data = match row.get(u16::try_from(i)?) {
                     Some(data) => data,
@@ -115,23 +75,12 @@ pub fn cli(args: &ArgMatches) -> Result<()> {
                 };
             }
 
-            pack.finish_row()?;
-
-            if pack.mem_estimate() > 512 * 1024 * 1024 {
-                info!("dibatching patch");
-                tx.send(RecordBatch::try_from_iter(
-                    pack.take_batch()
-                        .into_iter()
-                        .zip(stats.cols.iter())
-                        .map(|(arr, stat)| (stat.name.to_string(), arr)),
-                ))?;
-            }
+            writer.finish_row()?;
         }
     }
 
     info!("joining");
-    drop(tx);
-    thread.join().expect("thread panic")?;
+    writer.finish()?;
 
     Ok(())
 }
