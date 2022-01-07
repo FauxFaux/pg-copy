@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::fs;
 use std::io::Write;
 use std::sync::Arc;
@@ -116,9 +117,9 @@ enum PackItKind {
 }
 
 impl PackItKind {
-    fn with_capacity(self, capacity: usize) -> VarArray {
+    fn array_with_capacity(self, capacity: usize) -> VarArray {
         match self {
-            PackItKind::String => VarArray::String(MutableUtf8Array::with_capacity(capacity)),
+            PackItKind::String => VarArray::new(MutableUtf8Array::<i32>::with_capacity(capacity)),
         }
     }
 
@@ -129,16 +130,24 @@ impl PackItKind {
     }
 }
 
-enum VarArray {
-    String(MutableUtf8Array<i32>),
+struct VarArray {
+    inner: Box<dyn MutableArray>,
 }
 
 impl VarArray {
+    fn new<T: MutableArray + 'static>(array: T) -> Self {
+        Self {
+            inner: Box::new(array),
+        }
+    }
+
+    fn downcast_mut<T: Any>(&mut self) -> Option<&mut T> {
+        self.inner.as_mut_any().downcast_mut()
+    }
+
     // this moves, but has to be called from a mut ref?!
     fn as_arc(&mut self) -> Arc<dyn Array> {
-        match self {
-            VarArray::String(arr) => arr.as_arc(),
-        }
+        self.inner.as_arc()
     }
 }
 
@@ -150,7 +159,10 @@ struct PackIt {
 }
 
 fn make_builders(schema: &[PackItKind], cap: usize) -> Box<[VarArray]> {
-    schema.iter().map(|kind| kind.with_capacity(cap)).collect()
+    schema
+        .iter()
+        .map(|kind| kind.array_with_capacity(cap))
+        .collect()
 }
 
 impl PackIt {
@@ -164,22 +176,22 @@ impl PackIt {
     }
 
     fn push_null(&mut self, i: usize) -> Result<()> {
-        match &mut self.builders[i] {
-            VarArray::String(arr) => arr.push_null(),
-            _ => bail!("unsupported"),
-        }
+        self.builders[i].inner.push_null();
         Ok(())
     }
 
     fn push_str(&mut self, i: usize, val: Option<&str>) -> Result<()> {
-        match &mut self.builders[i] {
-            VarArray::String(arr) => {
-                self.mem_used += val.map(|val| val.len()).unwrap_or_default() + 4;
-                arr.try_push(val)?;
-            }
-            _ => bail!("unsupported"),
+        let arr = &mut self.builders[i];
+        if let Some(arr) = arr.downcast_mut::<MutableUtf8Array<i32>>() {
+            self.mem_used += val.map(|val| val.len()).unwrap_or_default() + 4;
+            arr.try_push(val)?;
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "can't push a string to a {}",
+                std::any::type_name_of_val(arr)
+            ))
         }
-        Ok(())
     }
 
     fn finish_row(&mut self) -> Result<()> {
