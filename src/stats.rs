@@ -14,7 +14,7 @@ pub struct Stats {
     pub cols: Vec<ColInfo>,
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub enum ColType {
     Bool,
     Int4,

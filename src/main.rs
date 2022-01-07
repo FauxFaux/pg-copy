@@ -1,5 +1,3 @@
-#![feature(type_name_of_val)]
-
 mod conn;
 mod packit;
 mod pg2pg;
