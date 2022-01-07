@@ -6,6 +6,7 @@ use byteorder::{ReadBytesExt, BE};
 pub struct Unbin<R> {
     inner: R,
     fields: u16,
+    row: Row,
 }
 
 pub struct Row {
@@ -22,10 +23,21 @@ impl<R: Read> Unbin<R> {
             "bad file header: {:?}",
             buf
         );
-        Ok(Self { inner, fields })
+        let cap = usize::from(fields);
+        Ok(Self {
+            inner,
+            fields,
+            row: Row {
+                buf: Vec::with_capacity(cap * 4),
+                fields: Vec::with_capacity(cap),
+            },
+        })
     }
 
-    pub fn next(&mut self) -> Result<Option<Row>> {
+    pub fn next(&mut self) -> Result<Option<&Row>> {
+        self.row.buf.truncate(0);
+        self.row.fields.truncate(0);
+
         let row_fields = self
             .inner
             .read_i16::<BE>()
@@ -39,24 +51,21 @@ impl<R: Read> Unbin<R> {
             row_fields
         );
 
-        let mut fields = Vec::with_capacity(usize::from(self.fields));
-        let mut buf = Vec::with_capacity(usize::from(self.fields));
-
         for _ in 0..self.fields {
             let len = self.inner.read_i32::<BE>()?;
             if len == -1 {
-                fields.push(None);
+                self.row.fields.push(None);
                 continue;
             }
             let len = usize::try_from(len)?;
-            let old_end = buf.len();
-            buf.extend((0..len).map(|_| 0));
-            let new_end = buf.len();
-            self.inner.read_exact(&mut buf[old_end..new_end])?;
-            fields.push(Some((old_end, new_end)));
+            let old_end = self.row.buf.len();
+            self.row.buf.extend((0..len).map(|_| 0));
+            let new_end = self.row.buf.len();
+            self.inner.read_exact(&mut self.row.buf[old_end..new_end])?;
+            self.row.fields.push(Some((old_end, new_end)));
         }
 
-        Ok(Some(Row { fields, buf }))
+        Ok(Some(&self.row))
     }
 }
 

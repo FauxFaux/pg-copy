@@ -1,8 +1,8 @@
 use std::any::Any;
-use std::fs;
 use std::io::Write;
 use std::str::from_utf8;
 use std::sync::Arc;
+use std::{fs, io};
 
 use anyhow::{anyhow, bail, Result};
 use arrow2::array::{
@@ -91,7 +91,7 @@ pub fn cli(args: &ArgMatches) -> Result<()> {
     let mut pack = PackIt::with_capacity(&packit_schema, 4096);
 
     for input in args.values_of("FILES").expect("required") {
-        let input = zstd::Decoder::new(fs::File::open(input)?)?;
+        let input = io::BufReader::new(zstd::Decoder::new(fs::File::open(input)?)?);
         let mut input = Unbin::new(input, u16::try_from(stats.cols.len())?)?;
         while let Some(row) = input.next()? {
             for (i, col) in stats.cols.iter().enumerate() {
