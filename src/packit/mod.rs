@@ -13,6 +13,7 @@ use arrow2::io::parquet::write::{
     to_parquet_schema, write_file, Compression, Encoding, RowGroupIterator, Version, WriteOptions,
 };
 use arrow2::record_batch::RecordBatch;
+use arrow2::types::NativeType;
 use clap::ArgMatches;
 use log::info;
 
@@ -100,9 +101,11 @@ pub fn cli(args: &ArgMatches) -> Result<()> {
                 };
                 match col.col_type {
                     ColType::Bool => pack.push_bool(i, pg_to_bool(data)?)?,
-                    ColType::Int4 => pack.push_i32(i, pg_to_i32(data)?)?,
-                    ColType::Int8 | ColType::TimeStampTz => pack.push_i64(i, pg_to_i64(data)?)?,
-                    ColType::Float8 => pack.push_f64(i, pg_to_f64(data)?)?,
+                    ColType::Int4 => pack.push_primitive(i, pg_to_i32(data)?)?,
+                    ColType::Int8 | ColType::TimeStampTz => {
+                        pack.push_primitive(i, pg_to_i64(data)?)?
+                    }
+                    ColType::Float8 => pack.push_primitive(i, pg_to_f64(data)?)?,
                     ColType::Text => pack.push_str(i, Some(from_utf8(data)?))?,
                     ColType::JsonB => pack.push_str(i, Some(&from_utf8(data)?[1..]))?,
                     other => panic!(
@@ -146,13 +149,11 @@ fn pg_to_bool(slice: &[u8]) -> Result<bool> {
 }
 
 fn pg_to_i32(slice: &[u8]) -> Result<i32> {
-    let arr: [u8; 4] = slice.try_into()?;
-    Ok(i32::from_be_bytes(arr))
+    Ok(i32::from_be_bytes(slice.try_into()?))
 }
 
 fn pg_to_i64(slice: &[u8]) -> Result<i64> {
-    let arr: [u8; 8] = slice.try_into()?;
-    Ok(i64::from_be_bytes(arr))
+    Ok(i64::from_be_bytes(slice.try_into()?))
 }
 
 fn pg_to_f64(slice: &[u8]) -> Result<f64> {
@@ -236,6 +237,8 @@ impl PackIt {
     }
 
     fn push_null(&mut self, i: usize) -> Result<()> {
+        // only off by a factor of about eight
+        self.mem_used += 1;
         self.builders[i].inner.push_null();
         Ok(())
     }
@@ -243,7 +246,8 @@ impl PackIt {
     fn push_str(&mut self, i: usize, val: Option<&str>) -> Result<()> {
         let arr = &mut self.builders[i];
         if let Some(arr) = arr.downcast_mut::<MutableUtf8Array<i32>>() {
-            self.mem_used += val.map(|val| val.len()).unwrap_or_default() + 4;
+            self.mem_used +=
+                val.map(|val| val.len()).unwrap_or_default() + std::mem::size_of::<i32>();
             arr.try_push(val)?;
             Ok(())
         } else {
@@ -254,7 +258,7 @@ impl PackIt {
     fn push_bool(&mut self, i: usize, val: bool) -> Result<()> {
         let arr = &mut self.builders[i];
         if let Some(arr) = arr.downcast_mut::<MutableBooleanArray>() {
-            // only off by a factor of about eight
+            // only off by a factor of about four
             self.mem_used += 1;
             arr.try_push(Some(val))?;
             Ok(())
@@ -263,36 +267,17 @@ impl PackIt {
         }
     }
 
-    fn push_i32(&mut self, i: usize, val: i32) -> Result<()> {
+    fn push_primitive<T: NativeType>(&mut self, i: usize, val: T) -> Result<()> {
         let arr = &mut self.builders[i];
-        if let Some(arr) = arr.downcast_mut::<MutablePrimitiveArray<i32>>() {
-            self.mem_used += 4 + 1;
+        if let Some(arr) = arr.downcast_mut::<MutablePrimitiveArray<T>>() {
+            self.mem_used += std::mem::size_of::<T>();
             arr.try_push(Some(val))?;
             Ok(())
         } else {
-            Err(anyhow!("can't push an i32 to this column"))
-        }
-    }
-
-    fn push_i64(&mut self, i: usize, val: i64) -> Result<()> {
-        let arr = &mut self.builders[i];
-        if let Some(arr) = arr.downcast_mut::<MutablePrimitiveArray<i64>>() {
-            self.mem_used += 8 + 1;
-            arr.try_push(Some(val))?;
-            Ok(())
-        } else {
-            Err(anyhow!("can't push an i64 to this column"))
-        }
-    }
-
-    fn push_f64(&mut self, i: usize, val: f64) -> Result<()> {
-        let arr = &mut self.builders[i];
-        if let Some(arr) = arr.downcast_mut::<MutablePrimitiveArray<f64>>() {
-            self.mem_used += 8 + 1;
-            arr.try_push(Some(val))?;
-            Ok(())
-        } else {
-            Err(anyhow!("can't push an f64 to this column"))
+            Err(anyhow!(
+                "can't push an {} to this column",
+                std::any::type_name::<T>()
+            ))
         }
     }
 
