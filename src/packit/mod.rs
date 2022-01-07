@@ -1,24 +1,20 @@
-use std::any::Any;
 use std::io::Write;
 use std::str::from_utf8;
-use std::sync::Arc;
 use std::{fs, io};
 
 use anyhow::{anyhow, bail, Result};
-use arrow2::array::{
-    Array, MutableArray, MutableBooleanArray, MutablePrimitiveArray, MutableUtf8Array, TryPush,
-};
-use arrow2::datatypes::{DataType, Field, Schema};
+use arrow2::datatypes::{Field, Schema};
 use arrow2::io::parquet::write::{
     to_parquet_schema, write_file, Compression, Encoding, RowGroupIterator, Version, WriteOptions,
 };
 use arrow2::record_batch::RecordBatch;
-use arrow2::types::NativeType;
 use clap::ArgMatches;
 use log::info;
 
+mod table;
 mod unbin;
 
+use crate::packit::table::{Kind, Table};
 use crate::stats::ColType;
 use crate::stats::Stats;
 use unbin::Unbin;
@@ -35,13 +31,13 @@ pub fn cli(args: &ArgMatches) -> Result<()> {
         .iter()
         .map(|col| {
             Ok(match col.col_type {
-                ColType::Bool => PackItKind::Bool,
-                ColType::Int4 => PackItKind::I32,
-                ColType::Int8 => PackItKind::I64,
-                ColType::Float8 => PackItKind::F64,
+                ColType::Bool => Kind::Bool,
+                ColType::Int4 => Kind::I32,
+                ColType::Int8 => Kind::I64,
+                ColType::Float8 => Kind::F64,
                 // TODO: actually map timestamp columns
-                ColType::TimeStampTz => PackItKind::I64,
-                ColType::Text | ColType::JsonB | ColType::Json => PackItKind::String,
+                ColType::TimeStampTz => Kind::I64,
+                ColType::Text | ColType::JsonB | ColType::Json => Kind::String,
                 other => bail!("unsupported column type {:?}", other),
             })
         })
@@ -88,7 +84,7 @@ pub fn cli(args: &ArgMatches) -> Result<()> {
         Ok(())
     });
 
-    let mut pack = PackIt::with_capacity(&packit_schema, 4096);
+    let mut pack = Table::with_capacity(&packit_schema, 4096);
 
     for input in args.values_of("FILES").expect("required") {
         let input = io::BufReader::new(zstd::Decoder::new(fs::File::open(input)?)?);
@@ -121,7 +117,7 @@ pub fn cli(args: &ArgMatches) -> Result<()> {
 
             pack.finish_row()?;
 
-            if pack.mem_used > 512 * 1024 * 1024 {
+            if pack.mem_estimate() > 512 * 1024 * 1024 {
                 info!("dibatching patch");
                 tx.send(RecordBatch::try_from_iter(
                     pack.take_batch()
@@ -162,137 +158,4 @@ fn pg_to_i64(slice: &[u8]) -> Result<i64> {
 
 fn pg_to_f64(slice: &[u8]) -> Result<f64> {
     Ok(f64::from_be_bytes(slice.try_into()?))
-}
-
-#[derive(Copy, Clone)]
-enum PackItKind {
-    Bool,
-    I32,
-    I64,
-    F64,
-    String,
-}
-
-impl PackItKind {
-    fn array_with_capacity(self, capacity: usize) -> VarArray {
-        match self {
-            PackItKind::Bool => VarArray::new(MutableBooleanArray::with_capacity(capacity)),
-            PackItKind::I32 => VarArray::new(MutablePrimitiveArray::<i32>::with_capacity(capacity)),
-            PackItKind::I64 => VarArray::new(MutablePrimitiveArray::<i64>::with_capacity(capacity)),
-            PackItKind::F64 => VarArray::new(MutablePrimitiveArray::<f64>::with_capacity(capacity)),
-            PackItKind::String => VarArray::new(MutableUtf8Array::<i32>::with_capacity(capacity)),
-        }
-    }
-
-    fn to_arrow(self) -> DataType {
-        match self {
-            PackItKind::Bool => DataType::Boolean,
-            PackItKind::I32 => DataType::Int32,
-            PackItKind::I64 => DataType::Int64,
-            PackItKind::F64 => DataType::Float64,
-            PackItKind::String => DataType::Utf8,
-        }
-    }
-}
-
-struct VarArray {
-    inner: Box<dyn MutableArray>,
-}
-
-impl VarArray {
-    fn new<T: MutableArray + 'static>(array: T) -> Self {
-        Self {
-            inner: Box::new(array),
-        }
-    }
-
-    fn downcast_mut<T: Any>(&mut self) -> Option<&mut T> {
-        self.inner.as_mut_any().downcast_mut()
-    }
-
-    // this moves, but has to be called from a mut ref?!
-    fn as_arc(&mut self) -> Arc<dyn Array> {
-        self.inner.as_arc()
-    }
-}
-
-struct PackIt {
-    schema: Box<[PackItKind]>,
-    builders: Box<[VarArray]>,
-    cap: usize,
-    mem_used: usize,
-}
-
-fn make_builders(schema: &[PackItKind], cap: usize) -> Box<[VarArray]> {
-    schema
-        .iter()
-        .map(|kind| kind.array_with_capacity(cap))
-        .collect()
-}
-
-impl PackIt {
-    fn with_capacity(schema: &[PackItKind], cap: usize) -> Self {
-        Self {
-            schema: schema.to_vec().into_boxed_slice(),
-            builders: make_builders(schema, cap),
-            cap,
-            mem_used: 0,
-        }
-    }
-
-    fn push_null(&mut self, i: usize) -> Result<()> {
-        // only off by a factor of about eight
-        self.mem_used += 1;
-        self.builders[i].inner.push_null();
-        Ok(())
-    }
-
-    fn push_str(&mut self, i: usize, val: Option<&str>) -> Result<()> {
-        let arr = &mut self.builders[i];
-        if let Some(arr) = arr.downcast_mut::<MutableUtf8Array<i32>>() {
-            self.mem_used +=
-                val.map(|val| val.len()).unwrap_or_default() + std::mem::size_of::<i32>();
-            arr.try_push(val)?;
-            Ok(())
-        } else {
-            Err(anyhow!("can't push a string to this column"))
-        }
-    }
-
-    fn push_bool(&mut self, i: usize, val: bool) -> Result<()> {
-        let arr = &mut self.builders[i];
-        if let Some(arr) = arr.downcast_mut::<MutableBooleanArray>() {
-            // only off by a factor of about four
-            self.mem_used += 1;
-            arr.try_push(Some(val))?;
-            Ok(())
-        } else {
-            Err(anyhow!("can't push a bool to this column"))
-        }
-    }
-
-    fn push_primitive<T: NativeType>(&mut self, i: usize, val: T) -> Result<()> {
-        let arr = &mut self.builders[i];
-        if let Some(arr) = arr.downcast_mut::<MutablePrimitiveArray<T>>() {
-            self.mem_used += std::mem::size_of::<T>();
-            arr.try_push(Some(val))?;
-            Ok(())
-        } else {
-            Err(anyhow!(
-                "can't push an {} to this column",
-                std::any::type_name::<T>()
-            ))
-        }
-    }
-
-    fn finish_row(&mut self) -> Result<()> {
-        Ok(())
-    }
-
-    fn take_batch(&mut self) -> Vec<Arc<dyn Array>> {
-        let ret = self.builders.iter_mut().map(|arr| arr.as_arc()).collect();
-        self.builders = make_builders(&self.schema, self.cap);
-        self.mem_used = 0;
-        ret
-    }
 }
