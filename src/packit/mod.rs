@@ -23,6 +23,9 @@ use crate::stats::ColType;
 use crate::stats::Stats;
 use unbin::Unbin;
 
+/// '2000-01-01' - '1970-01-01' to microseconds
+const POSTGRES_UNIX_OFFSET: i64 = 946_684_800_000_000;
+
 pub fn cli(args: &ArgMatches) -> Result<()> {
     let state_dir = args.value_of("project").expect("required");
     let stats: Stats = super::pg2pg::read_state_file(state_dir, "stats.json")?;
@@ -102,8 +105,9 @@ pub fn cli(args: &ArgMatches) -> Result<()> {
                 match col.col_type {
                     ColType::Bool => pack.push_bool(i, pg_to_bool(data)?)?,
                     ColType::Int4 => pack.push_primitive(i, pg_to_i32(data)?)?,
-                    ColType::Int8 | ColType::TimeStampTz => {
-                        pack.push_primitive(i, pg_to_i64(data)?)?
+                    ColType::Int8 => pack.push_primitive(i, pg_to_i64(data)?)?,
+                    ColType::TimeStampTz => {
+                        pack.push_primitive(i, pg_to_i64(data)? + POSTGRES_UNIX_OFFSET)?
                     }
                     ColType::Float8 => pack.push_primitive(i, pg_to_f64(data)?)?,
                     ColType::Text => pack.push_str(i, Some(from_utf8(data)?))?,
