@@ -4,6 +4,7 @@ use std::{fs, io};
 
 use anyhow::{bail, Result};
 use clap::ArgMatches;
+use log::info;
 
 mod table;
 mod unbin;
@@ -20,6 +21,7 @@ const POSTGRES_UNIX_OFFSET: i64 = 946_684_800_000_000;
 
 pub fn cli(args: &ArgMatches) -> Result<()> {
     let state_dir = args.value_of("project").expect("required");
+    let out_file = args.value_of("output").expect("required");
     let stats: Stats = super::pg2pg::read_state_file(state_dir, "stats.json")?;
 
     let packit_schema = stats
@@ -40,11 +42,12 @@ pub fn cli(args: &ArgMatches) -> Result<()> {
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let file = fs::File::create("a.parquet")?;
+    let file = fs::File::create(out_file)?;
 
     let mut writer = Writer::new(file, &packit_schema)?;
 
     for input in args.values_of("FILES").expect("required") {
+        info!("processing {}...", input);
         let input = io::BufReader::new(zstd::Decoder::new(fs::File::open(input)?)?);
         let mut input = Unbin::new(input, u16::try_from(stats.cols.len())?)?;
         while let Some(row) = input.next()? {
