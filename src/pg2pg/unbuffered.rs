@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::env;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,7 +21,8 @@ use crate::pg2pg::ProjectStatus;
 struct Config {
     src: String,
     dest: String,
-    table: String,
+    src_table: String,
+    dest_table: String,
 }
 
 #[derive(Default, Debug)]
@@ -43,7 +45,8 @@ pub fn go(state_dir: impl AsRef<Path>) -> Result<()> {
     let config = Config {
         src: conn_string_from_env("PG_SRC")?,
         dest: conn_string_from_env("PG_DEST")?,
-        table: status.table_name.to_string(),
+        src_table: status.table_name.to_string(),
+        dest_table: env::var("OUT_TABLE").unwrap_or_else(|_| status.table_name.to_string()),
     };
 
     let ids: Vec<i64> = super::read_state_file(state_dir.as_ref(), "ids.json")?;
@@ -112,13 +115,13 @@ fn work(config: Config, stats: Arc<StatKeeper>, query: String) -> Result<()> {
     let mut dest = pg(&config.dest, "dest")?;
     let mut reader = src.copy_out(&format!(
         "COPY (SELECT * FROM {} WHERE {}) TO STDOUT WITH (FORMAT binary)",
-        config.table, query
+        config.src_table, query
     ))?;
     info!("COPY OUT command sent");
 
     let mut writer = dest.copy_in(&format!(
         "COPY {} FROM STDIN WITH (FORMAT binary)",
-        config.table
+        config.dest_table
     ))?;
     info!("COPY IN command sent");
 
