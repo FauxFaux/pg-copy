@@ -2,20 +2,18 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::channel;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::bail;
 use anyhow::Result;
 use clap::ArgMatches;
 use itertools::Itertools;
 use log::info;
 use num_format::{Locale, ToFormattedString};
-use threadpool::ThreadPool;
 
 use crate::conn::{conn_string_from_env, pg};
 use crate::pg2pg::count::Counter;
+use crate::pg2pg::pooler::run_all;
 use crate::pg2pg::ProjectStatus;
 
 #[derive(Clone)]
@@ -52,38 +50,20 @@ pub fn go(state_dir: impl AsRef<Path>) -> Result<()> {
 
     let wheres = generate_wheres(&ids, status.id);
 
-    let pool = ThreadPool::new(64);
-    let (tx, rx) = channel();
-
     let mut stats = HashMap::new();
 
-    for query in wheres {
+    let pool = run_all(wheres.into_iter().map(|query| {
         let config = config.clone();
-        let tx = tx.clone();
         let stat = Arc::new(StatKeeper::default());
         stats.insert(query.to_string(), Arc::clone(&stat));
 
-        pool.execute(move || {
-            tx.send(work(config, stat, query))
-                .expect("main thread has gone away");
-        });
-    }
+        || work(config, stat, query)
+    }))?;
 
     let start = Instant::now();
 
-    while pool.queued_count() > 0 || pool.active_count() > 0 {
-        if let Ok(result) = rx.try_recv() {
-            result?;
-            continue;
-        };
-
+    while pool.still_running(Duration::from_secs(2))? {
         summary_stats(start, &stats)?;
-
-        if pool.panic_count() > 0 {
-            bail!("some thread panic'd");
-        }
-
-        std::thread::sleep(Duration::from_secs(2));
     }
 
     Ok(())
