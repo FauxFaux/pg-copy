@@ -1,6 +1,7 @@
 mod count;
 mod par_dump;
 mod pooler;
+mod ranges;
 mod unbuffered;
 
 use std::env;

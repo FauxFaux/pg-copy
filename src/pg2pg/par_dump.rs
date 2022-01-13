@@ -8,8 +8,8 @@ use clap::ArgMatches;
 use log::info;
 use threadpool::ThreadPool;
 
+use super::ranges::generate_wheres;
 use crate::conn::{conn_string_from_env, pg};
-use crate::pg2pg::unbuffered::generate_wheres;
 use crate::pg2pg::ProjectStatus;
 
 pub fn cli(args: &ArgMatches) -> Result<()> {
