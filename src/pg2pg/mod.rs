@@ -1,3 +1,4 @@
+mod count;
 mod par_dump;
 mod unbuffered;
 

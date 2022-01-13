@@ -1,13 +1,11 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::channel;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::conn::{conn_string_from_env, pg};
-use crate::pg2pg::ProjectStatus;
 use anyhow::bail;
 use anyhow::Result;
 use clap::ArgMatches;
@@ -15,6 +13,10 @@ use itertools::Itertools;
 use log::info;
 use num_format::{Locale, ToFormattedString};
 use threadpool::ThreadPool;
+
+use crate::conn::{conn_string_from_env, pg};
+use crate::pg2pg::count::Counter;
+use crate::pg2pg::ProjectStatus;
 
 #[derive(Clone)]
 struct Config {
@@ -25,10 +27,10 @@ struct Config {
 
 #[derive(Default, Debug)]
 struct StatKeeper {
-    observations: AtomicU64,
-    bytes: AtomicU64,
-    read_micros: AtomicU64,
-    write_micros: AtomicU64,
+    observations: Counter,
+    bytes: Counter,
+    read_micros: Counter,
+    write_micros: Counter,
     started: AtomicBool,
     finished: AtomicBool,
 }
@@ -120,20 +122,11 @@ fn summary_stats(start: Instant, stats: &HashMap<String, Arc<StatKeeper>>) -> Re
     let all_stats = stats.values().collect_vec();
 
     let ord = Ordering::Relaxed;
-    let read: u64 = all_stats
-        .iter()
-        .map(|stats| stats.read_micros.load(ord))
-        .sum();
-    let write: u64 = all_stats
-        .iter()
-        .map(|stats| stats.write_micros.load(ord))
-        .sum();
-    let observations: u64 = all_stats
-        .iter()
-        .map(|stats| stats.observations.load(ord))
-        .sum();
+    let read: u64 = all_stats.iter().map(|stats| stats.read_micros.get()).sum();
+    let write: u64 = all_stats.iter().map(|stats| stats.write_micros.get()).sum();
+    let observations: u64 = all_stats.iter().map(|stats| stats.observations.get()).sum();
 
-    let bytes: u64 = all_stats.iter().map(|stats| stats.bytes.load(ord)).sum();
+    let bytes: u64 = all_stats.iter().map(|stats| stats.bytes.get()).sum();
     let live = all_stats
         .iter()
         .filter(|stats| stats.started.load(ord) && !stats.finished.load(ord))
@@ -163,13 +156,10 @@ fn summary_stats(start: Instant, stats: &HashMap<String, Arc<StatKeeper>>) -> Re
     Ok(())
 }
 
-fn time<T>(timer: &AtomicU64, func: impl FnOnce() -> T) -> T {
+fn time<T>(timer: &Counter, func: impl FnOnce() -> T) -> T {
     let start = Instant::now();
     let response = func();
-    timer.fetch_add(
-        u64::try_from(start.elapsed().as_micros()).expect("2^64 micros is 500,000 years"),
-        Ordering::Relaxed,
-    );
+    timer.add(u64::try_from(start.elapsed().as_micros()).expect("2^64 micros is 500,000 years"));
     response
 }
 
@@ -197,15 +187,14 @@ fn work(config: Config, stats: Arc<StatKeeper>, query: String) -> Result<()> {
             break;
         }
 
-        stats.bytes.fetch_add(
-            u64::try_from(found).expect("8kB <= u64::MAX"),
-            Ordering::Relaxed,
-        );
+        stats
+            .bytes
+            .add(u64::try_from(found).expect("8kB <= u64::MAX"));
 
         let buf = &buf[..found];
         time(&stats.write_micros, || writer.write_all(buf))?;
 
-        stats.observations.fetch_add(1, Ordering::Relaxed);
+        stats.observations.inc();
     }
 
     drop(reader);
