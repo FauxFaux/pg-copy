@@ -107,13 +107,6 @@ fn summary_stats(start: Instant, stats: &HashMap<String, Arc<StatKeeper>>) -> Re
     Ok(())
 }
 
-fn time<T>(timer: &Counter, func: impl FnOnce() -> T) -> T {
-    let start = Instant::now();
-    let response = func();
-    timer.add(u64::try_from(start.elapsed().as_micros()).expect("2^64 micros is 500,000 years"));
-    response
-}
-
 fn work(config: Config, stats: Arc<StatKeeper>, query: String) -> Result<()> {
     let mut src = pg(&config.src, "src")?;
     let mut dest = pg(&config.dest, "dest")?;
@@ -133,7 +126,7 @@ fn work(config: Config, stats: Arc<StatKeeper>, query: String) -> Result<()> {
 
     let mut buf = [0u8; 8 * 1024];
     loop {
-        let found = time(&stats.read_micros, || reader.read(&mut buf))?;
+        let found = stats.read_micros.time(|| reader.read(&mut buf))?;
         if 0 == found {
             break;
         }
@@ -143,7 +136,7 @@ fn work(config: Config, stats: Arc<StatKeeper>, query: String) -> Result<()> {
             .add(u64::try_from(found).expect("8kB <= u64::MAX"));
 
         let buf = &buf[..found];
-        time(&stats.write_micros, || writer.write_all(buf))?;
+        stats.write_micros.time(|| writer.write_all(buf))?;
 
         stats.observations.inc();
     }
