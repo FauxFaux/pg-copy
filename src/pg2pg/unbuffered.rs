@@ -173,6 +173,13 @@ fn summary_stats(start: Instant, stats: &HashMap<String, Arc<Mutex<StatKeeper>>>
     Ok(())
 }
 
+fn time<T>(timer: &mut u128, func: impl FnOnce() -> T) -> T {
+    let start = Instant::now();
+    let response = func();
+    *timer += start.elapsed().as_micros();
+    response
+}
+
 fn work(config: Config, shared_stats: Arc<Mutex<StatKeeper>>, query: String) -> Result<()> {
     let mut src = pg(&config.src, "src")?;
     let mut dest = pg(&config.dest, "dest")?;
@@ -193,21 +200,15 @@ fn work(config: Config, shared_stats: Arc<Mutex<StatKeeper>>, query: String) -> 
 
     let mut buf = [0u8; 8 * 1024];
     loop {
-        let start = Instant::now();
-
-        let found = reader.read(&mut buf)?;
+        let found = time(&mut stats.read_micros, || reader.read(&mut buf))?;
         if 0 == found {
             break;
         }
 
-        stats.bytes += found as u64;
-        stats.read_micros += start.elapsed().as_micros();
+        stats.bytes += u64::try_from(found).expect("8kB <= u64::MAX");
 
-        let begin_write = Instant::now();
         let buf = &buf[..found];
-        writer.write_all(buf)?;
-
-        stats.write_micros += begin_write.elapsed().as_micros();
+        time(&mut stats.write_micros, || writer.write_all(buf))?;
 
         // silly optimisation, avoid locking in the loop
         // approximately every 500kB
