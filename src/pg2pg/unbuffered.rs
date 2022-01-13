@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::channel;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::conn::{conn_string_from_env, pg};
@@ -22,26 +23,14 @@ struct Config {
     table: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum State {
-    NotStarted,
-    Started,
-    Finished(u64),
-}
-
-impl Default for State {
-    fn default() -> Self {
-        Self::NotStarted
-    }
-}
-
-#[derive(Clone, Default, Debug)]
+#[derive(Default, Debug)]
 struct StatKeeper {
-    observations: usize,
-    bytes: u64,
-    read_micros: u128,
-    write_micros: u128,
-    state: State,
+    observations: AtomicU64,
+    bytes: AtomicU64,
+    read_micros: AtomicU64,
+    write_micros: AtomicU64,
+    started: AtomicBool,
+    finished: AtomicBool,
 }
 
 pub fn cli(args: &ArgMatches) -> Result<()> {
@@ -69,7 +58,7 @@ pub fn go(state_dir: impl AsRef<Path>) -> Result<()> {
     for query in wheres {
         let config = config.clone();
         let tx = tx.clone();
-        let stat = Arc::new(Mutex::new(StatKeeper::default()));
+        let stat = Arc::new(StatKeeper::default());
         stats.insert(query.to_string(), Arc::clone(&stat));
 
         pool.execute(move || {
@@ -127,34 +116,35 @@ pub fn generate_wheres(ids: &[i64], end: i64) -> Vec<String> {
         .collect()
 }
 
-fn summary_stats(start: Instant, stats: &HashMap<String, Arc<Mutex<StatKeeper>>>) -> Result<()> {
-    let all_stats = stats
+fn summary_stats(start: Instant, stats: &HashMap<String, Arc<StatKeeper>>) -> Result<()> {
+    let all_stats = stats.values().collect_vec();
+
+    let ord = Ordering::Relaxed;
+    let read: u64 = all_stats
         .iter()
-        .map(|(query, stat)| match stat.lock() {
-            Ok(stat) => Ok(stat.clone()),
-            Err(e) => bail!("{}: poison! {:?}", query, e),
-        })
-        .collect::<Result<Vec<_>>>()?;
+        .map(|stats| stats.read_micros.load(ord))
+        .sum();
+    let write: u64 = all_stats
+        .iter()
+        .map(|stats| stats.write_micros.load(ord))
+        .sum();
+    let observations: u64 = all_stats
+        .iter()
+        .map(|stats| stats.observations.load(ord))
+        .sum();
 
-    let read: u128 = all_stats.iter().map(|stats| stats.read_micros).sum();
-    let write: u128 = all_stats.iter().map(|stats| stats.write_micros).sum();
-    let observations: usize = all_stats.iter().map(|stats| stats.observations).sum();
-
-    let bytes: u64 = all_stats.iter().map(|stats| stats.bytes).sum();
+    let bytes: u64 = all_stats.iter().map(|stats| stats.bytes.load(ord)).sum();
     let live = all_stats
         .iter()
-        .filter(|stats| stats.state == State::Started)
+        .filter(|stats| stats.started.load(ord) && !stats.finished.load(ord))
         .count();
     let finished = all_stats
         .iter()
-        .filter(|stats| match stats.state {
-            State::Finished(_) => true,
-            _ => false,
-        })
+        .filter(|stats| stats.finished.load(ord))
         .count();
 
     let elapsed = start.elapsed();
-    let obs_div = (observations as u128).max(1);
+    let obs_div = observations.max(1);
     println!(
         "{}s elapsed, {}us mean read, {}us mean write",
         elapsed.as_secs().to_formatted_string(&Locale::en),
@@ -173,14 +163,17 @@ fn summary_stats(start: Instant, stats: &HashMap<String, Arc<Mutex<StatKeeper>>>
     Ok(())
 }
 
-fn time<T>(timer: &mut u128, func: impl FnOnce() -> T) -> T {
+fn time<T>(timer: &AtomicU64, func: impl FnOnce() -> T) -> T {
     let start = Instant::now();
     let response = func();
-    *timer += start.elapsed().as_micros();
+    timer.fetch_add(
+        u64::try_from(start.elapsed().as_micros()).expect("2^64 micros is 500,000 years"),
+        Ordering::Relaxed,
+    );
     response
 }
 
-fn work(config: Config, shared_stats: Arc<Mutex<StatKeeper>>, query: String) -> Result<()> {
+fn work(config: Config, stats: Arc<StatKeeper>, query: String) -> Result<()> {
     let mut src = pg(&config.src, "src")?;
     let mut dest = pg(&config.dest, "dest")?;
     let mut reader = src.copy_out(&format!(
@@ -195,46 +188,34 @@ fn work(config: Config, shared_stats: Arc<Mutex<StatKeeper>>, query: String) -> 
     ))?;
     info!("COPY IN command sent");
 
-    let mut stats = StatKeeper::default();
-    stats.state = State::Started;
+    stats.started.store(true, Ordering::Relaxed);
 
     let mut buf = [0u8; 8 * 1024];
     loop {
-        let found = time(&mut stats.read_micros, || reader.read(&mut buf))?;
+        let found = time(&stats.read_micros, || reader.read(&mut buf))?;
         if 0 == found {
             break;
         }
 
-        stats.bytes += u64::try_from(found).expect("8kB <= u64::MAX");
+        stats.bytes.fetch_add(
+            u64::try_from(found).expect("8kB <= u64::MAX"),
+            Ordering::Relaxed,
+        );
 
         let buf = &buf[..found];
-        time(&mut stats.write_micros, || writer.write_all(buf))?;
+        time(&stats.write_micros, || writer.write_all(buf))?;
 
-        // silly optimisation, avoid locking in the loop
-        // approximately every 500kB
-        if stats.observations % 64 == 0 {
-            let mut shared_stats = shared_stats
-                .lock()
-                .expect("the main thread would have panicked");
-            *shared_stats = stats.clone();
-        }
-
-        stats.observations += 1;
+        stats.observations.fetch_add(1, Ordering::Relaxed);
     }
 
     drop(reader);
     src.close()?;
 
     writer.flush()?;
-    let written = writer.finish()?;
+    writer.finish()?;
     dest.close()?;
 
-    stats.state = State::Finished(written);
-
-    let mut shared = shared_stats
-        .lock()
-        .expect("the main thread would have panicked");
-    *shared = stats;
+    stats.finished.store(true, Ordering::Release);
 
     Ok(())
 }
