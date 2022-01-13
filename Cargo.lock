@@ -802,6 +802,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pack-it"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arrow2",
+ "log",
+]
+
+[[package]]
 name = "parking_lot"
 version = "0.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -878,6 +887,7 @@ dependencies = [
  "log",
  "native-tls",
  "num-format",
+ "pack-it",
  "postgres",
  "postgres-native-tls",
  "regex",

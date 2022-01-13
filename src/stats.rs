@@ -98,7 +98,7 @@ pub fn stats(client: &mut Client, table: &str) -> Result<Stats> {
 }
 
 impl ColType {
-    fn from_str(val: &str) -> Result<ColType> {
+    pub(crate) fn from_str(val: &str) -> Result<ColType> {
         Ok(match val {
             "bool" => ColType::Bool,
             "int4" => ColType::Int4,

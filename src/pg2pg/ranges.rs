@@ -1,6 +1,6 @@
 use itertools::Itertools;
 
-fn generate_ranges(ids: &[i64], end: i64) -> Vec<(i64, i64)> {
+pub fn generate_ranges(ids: &[i64], end: i64) -> Vec<(i64, i64)> {
     let ids_per_bucket = 32;
 
     let buckets = ids.len() / ids_per_bucket;
