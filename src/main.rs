@@ -38,7 +38,12 @@ fn main() -> Result<()> {
         .subcommand(
             App::new("packit")
                 .arg(Arg::new("FILES").multiple_values(true).required(true))
-                .arg(Arg::new("output").takes_value(true).required(true).short('o'))
+                .arg(
+                    Arg::new("output")
+                        .takes_value(true)
+                        .required(true)
+                        .short('o'),
+                )
                 .arg(project.clone()),
         )
         .subcommand(
