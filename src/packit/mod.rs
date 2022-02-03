@@ -99,6 +99,7 @@ fn pg_to_bool(slice: &[u8]) -> Result<bool> {
     })
 }
 
+// should probably use postgres-types
 fn pg_to_i32(slice: &[u8]) -> Result<i32> {
     Ok(i32::from_be_bytes(slice.try_into()?))
 }

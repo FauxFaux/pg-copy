@@ -12,7 +12,6 @@ use std::path::Path;
 use crate::conn::{conn_string_from_env, pg};
 use crate::stats::Stats;
 use anyhow::anyhow;
-use anyhow::private::kind::AdhocKind;
 use anyhow::Context;
 use anyhow::Result;
 use clap::ArgMatches;

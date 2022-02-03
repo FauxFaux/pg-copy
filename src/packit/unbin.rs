@@ -3,13 +3,14 @@ use std::io::Read;
 use anyhow::{anyhow, ensure, Context, Result};
 use byteorder::{ReadBytesExt, BE};
 
+// a slower, but sync/owned, version of postgres::*::BinaryCopyOutIter
 pub struct Unbin<R> {
     inner: R,
     fields: u16,
-    row: Row,
+    row: UnbinRow,
 }
 
-pub struct Row {
+pub struct UnbinRow {
     buf: Vec<u8>,
     fields: Vec<Option<(usize, usize)>>,
 }
@@ -27,14 +28,14 @@ impl<R: Read> Unbin<R> {
         Ok(Self {
             inner,
             fields,
-            row: Row {
+            row: UnbinRow {
                 buf: Vec::with_capacity(cap * 4),
                 fields: Vec::with_capacity(cap),
             },
         })
     }
 
-    pub fn next(&mut self) -> Result<Option<&Row>> {
+    pub fn next(&mut self) -> Result<Option<&UnbinRow>> {
         self.row.buf.truncate(0);
         self.row.fields.truncate(0);
 
@@ -69,7 +70,7 @@ impl<R: Read> Unbin<R> {
     }
 }
 
-impl Row {
+impl UnbinRow {
     pub(crate) fn get(&self, i: u16) -> Option<&[u8]> {
         self.fields[usize::from(i)].map(|(l, r)| &self.buf[l..r])
     }

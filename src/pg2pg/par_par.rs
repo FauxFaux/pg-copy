@@ -1,21 +1,17 @@
+use std::error::Error;
 use std::fs;
-use std::io;
-use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Result;
-use arrow2::array::MutablePrimitiveArray;
-use arrow2::io::parquet::write::Encoding;
 use clap::ArgMatches;
 use itertools::Itertools;
 use log::info;
-use pack_it::{Kind, TableField, Writer};
+use pack_it::{Kind, TableField};
 use postgres::fallible_iterator::FallibleIterator;
-use postgres::types::Type;
-use threadpool::ThreadPool;
+use postgres::types::{FromSql, Type};
+use time::OffsetDateTime;
 
-use super::ranges::generate_wheres;
 use crate::conn::{conn_string_from_env, pg};
 use crate::pg2pg::pooler::run_all;
 use crate::pg2pg::ranges::generate_ranges;
@@ -88,13 +84,19 @@ fn work(src: &str, query: &str, range: (i64, i64), schema: &[TableField]) -> Res
     while let Some(row) = iter.next()? {
         for (i, field) in schema.iter().enumerate() {
             match field.kind {
-                Kind::Bool => table.push_bool(i, row.get(i)),
-                Kind::U8 => unimplemented!(),
-                Kind::I32 => table.push_primitive(i, row.get::<_, i32>(i)),
-                Kind::I64 => table.push_primitive(i, row.get::<_, i64>(i)),
-                Kind::F64 => table.push_primitive(i, row.get::<_, f32>(i)),
                 Kind::String => table.push_str(i, Some(&row.get::<_, String>(i))),
-                Kind::TimestampSecsZ => table.push_primitive(i, row.get::<_, i64>(i)),
+                Kind::Bool => table.push_bool(i, row.get(i)),
+                Kind::I32 => table.push_primitive(i, row.get::<_, Option<i32>>(i)),
+                Kind::I64 => table.push_primitive(i, row.get::<_, Option<i64>>(i)),
+                Kind::F64 => table.push_primitive(i, row.get::<_, Option<f64>>(i)),
+                Kind::TimestampSecsZ => table.push_primitive(
+                    i,
+                    row.get::<_, Option<OffsetDateTime>>(i)
+                        .map(|v| v.unix_timestamp()),
+                ),
+
+                Kind::Uuid => unimplemented!(),
+                Kind::U8 => unimplemented!(),
             }?;
         }
     }
@@ -102,4 +104,21 @@ fn work(src: &str, query: &str, range: (i64, i64), schema: &[TableField]) -> Res
     unimplemented!("take batch and..");
 
     Ok(())
+}
+
+impl<'a> FromSql<'a> for RawBytes<'a> {
+    fn from_sql(
+        ty: &Type,
+        raw: &'a [u8],
+    ) -> std::result::Result<Self, Box<dyn Error + Sync + Send>> {
+        Ok(RawBytes { raw })
+    }
+
+    fn accepts(_: &Type) -> bool {
+        true
+    }
+}
+
+struct RawBytes<'a> {
+    raw: &'a [u8],
 }
