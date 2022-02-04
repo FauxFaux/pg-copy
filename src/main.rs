@@ -1,4 +1,5 @@
 mod conn;
+mod docs;
 mod packit;
 mod pg2pg;
 mod stats;
@@ -61,6 +62,21 @@ fn main() -> Result<()> {
                 .subcommand(App::new("batched").arg(project.clone()))
                 .subcommand(App::new("par-dump").arg(project.clone())),
         )
+        .subcommand(
+            App::new("docs")
+                .arg(
+                    Arg::new("id-list")
+                        .long("id-list")
+                        .takes_value(true)
+                        .required(true),
+                )
+                .arg(
+                    Arg::new("query-file")
+                        .long("query-file")
+                        .takes_value(true)
+                        .required(true),
+                ),
+        )
         .setting(clap::AppSettings::SubcommandRequiredElseHelp)
         .get_matches();
 
@@ -72,6 +88,7 @@ fn main() -> Result<()> {
         ("export-stats", args) => stats::export_stats(args)?,
         ("packit", args) => packit::cli(args)?,
         ("pg2pg", args) => pg2pg::cli(args)?,
+        ("docs", args) => docs::cli(args)?,
         _ => unreachable!("uncovered subcommand"),
     }
 

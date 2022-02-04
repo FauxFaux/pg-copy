@@ -7,7 +7,8 @@ edition = "2021"
 anyhow = "1"
 arrow2 = { version = "0.8", features = ["io_parquet", "io_parquet_compression"] }
 byteorder = "1.4"
-clap = { version = "3.0.0-rc.4", features = ["cargo"] }
+ciborium = "0.2"
+clap = { version = "3.0.0", features = ["cargo"] }
 dotenv = "0.15"
 env_logger = "0.9.0"
 itertools = "0.10"
@@ -25,4 +26,4 @@ threadpool = "1.8"
 time = "0.3"
 zstd = "0.9"
 
-pack-it = { path = "../pack-it" }
+pack-it = "0.1.1"

@@ -263,6 +263,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "ciborium"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0c137568cc60b904a7724001b35ce2630fd00d5d84805fbb608ab89509d788f"
+dependencies = [
+ "ciborium-io",
+ "ciborium-ll",
+ "serde",
+]
+
+[[package]]
+name = "ciborium-io"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "346de753af073cc87b52b2083a506b38ac176a44cfb05497b622e27be899b369"
+
+[[package]]
+name = "ciborium-ll"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "213030a2b5a4e0c0892b6652260cf6ccac84827b83a85a534e178e3906c4cf1b"
+dependencies = [
+ "ciborium-io",
+ "half",
+]
+
+[[package]]
 name = "clap"
 version = "3.0.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -552,6 +579,12 @@ dependencies = [
  "libc",
  "wasi",
 ]
+
+[[package]]
+name = "half"
+version = "1.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eabb4a44450da02c90444cf74558da904edde8fb4e9035a9a6a4e15445af0bd7"
 
 [[package]]
 name = "hash_hasher"
@@ -886,6 +919,8 @@ dependencies = [
 [[package]]
 name = "pack-it"
 version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10b728be7397391d80a69949f0da9d9081a3dd643b6aaef55b0e189e760cb13f"
 dependencies = [
  "anyhow",
  "arrow2 0.9.1",
@@ -980,6 +1015,7 @@ dependencies = [
  "anyhow",
  "arrow2 0.8.1",
  "byteorder",
+ "ciborium",
  "clap",
  "dotenv",
  "env_logger",
