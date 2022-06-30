@@ -1,17 +1,8 @@
-use std::collections::HashMap;
-use std::io::{Read, Write};
-use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-use std::{env, fs};
+use std::{fs};
 
 use anyhow::Result;
 use ciborium::value::Value;
 use clap::ArgMatches;
-use itertools::Itertools;
-use log::info;
-use num_format::{Locale, ToFormattedString};
 use postgres::types::{FromSql, Type};
 use postgres::Row;
 use time::OffsetDateTime;
