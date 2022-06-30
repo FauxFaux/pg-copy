@@ -5,13 +5,10 @@ use std::{fs, io};
 use anyhow::{bail, Result};
 use clap::ArgMatches;
 use log::info;
+use pack_it::{Kind, Packer, TableField};
 
-mod table;
 mod unbin;
-mod write;
 
-use crate::packit::table::Kind;
-use crate::packit::write::Writer;
 use crate::stats::ColType;
 use crate::stats::Stats;
 use unbin::Unbin;
@@ -38,13 +35,13 @@ pub fn cli(args: &ArgMatches) -> Result<()> {
                 ColType::Text | ColType::JsonB | ColType::Json => Kind::String,
                 other => bail!("unsupported column type {:?}", other),
             };
-            Ok(write::Field::new(&col.name, kind, col.nullable))
+            Ok(TableField::new(&col.name, kind, col.nullable))
         })
         .collect::<Result<Vec<_>>>()?;
 
     let file = fs::File::create(out_file)?;
 
-    let mut writer = Writer::new(file, &packit_schema)?;
+    let mut writer = Packer::new(file, &packit_schema)?;
 
     for input in args.values_of("FILES").expect("required") {
         info!("processing {}...", input);
@@ -62,13 +59,13 @@ pub fn cli(args: &ArgMatches) -> Result<()> {
                     }
                 };
                 match col.col_type {
-                    ColType::Bool => pack.push_bool(i, pg_to_bool(data)?)?,
-                    ColType::Int4 => pack.push_primitive(i, pg_to_i32(data)?)?,
-                    ColType::Int8 => pack.push_primitive(i, pg_to_i64(data)?)?,
+                    ColType::Bool => pack.push_bool(i, Some(pg_to_bool(data)?))?,
+                    ColType::Int4 => pack.push_primitive(i, Some(pg_to_i32(data)?))?,
+                    ColType::Int8 => pack.push_primitive(i, Some(pg_to_i64(data)?))?,
                     ColType::TimeStampTz => {
-                        pack.push_primitive(i, pg_to_i64(data)? + POSTGRES_UNIX_OFFSET)?
+                        pack.push_primitive(i, Some(pg_to_i64(data)? + POSTGRES_UNIX_OFFSET))?
                     }
-                    ColType::Float8 => pack.push_primitive(i, pg_to_f64(data)?)?,
+                    ColType::Float8 => pack.push_primitive(i, Some(pg_to_f64(data)?))?,
                     ColType::Text => pack.push_str(i, Some(from_utf8(data)?))?,
                     ColType::JsonB => pack.push_str(i, Some(&from_utf8(data)?[1..]))?,
                     other => panic!(
@@ -78,7 +75,7 @@ pub fn cli(args: &ArgMatches) -> Result<()> {
                 };
             }
 
-            writer.finish_row()?;
+            writer.consider_flushing()?;
         }
     }
 
